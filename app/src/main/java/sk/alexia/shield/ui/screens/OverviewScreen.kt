@@ -1,5 +1,13 @@
 package sk.alexia.shield.ui.screens
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.LaunchedEffect
+import sk.alexia.shield.update.AppUpdater
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -112,7 +120,7 @@ fun OverviewScreen(vm: MainViewModel, onNavigate: (Tab) -> Unit) {
                             }
                         }
                     }
-                    val threats = r.apps.filter { it.malware != null || it.banker }
+                    val threats = r.apps.filter { it.isThreat }
                     if (threats.isNotEmpty()) {
                         Text(
                             "🦠 Hrozby: " + threats.joinToString { it.label },
@@ -127,6 +135,73 @@ fun OverviewScreen(vm: MainViewModel, onNavigate: (Tab) -> Unit) {
                         Button(onClick = { onNavigate(Tab.APPS) }) { Text("Zobraziť appky") }
                     }
                 }
+            }
+        }
+
+        item {
+            val checks by vm.deviceChecks.collectAsStateWithLifecycle()
+            LaunchedEffect(resume) { vm.refreshDevice() }
+            if (checks.isNotEmpty()) {
+                SectionCard("Bezpečnosť telefónu") {
+                    checks.forEach { c ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(if (c.ok) "✅" else if (c.severe) "🔴" else "⚠️")
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(c.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                                HintText(c.detail)
+                            }
+                            val fix = c.fix
+                            if (!c.ok && fix != null) {
+                                TextButton(onClick = {
+                                    runCatching { ctx.startActivity(fix.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                                }) { Text("Opraviť") }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            val update by vm.update.collectAsStateWithLifecycle()
+            val updating by vm.updating.collectAsStateWithLifecycle()
+            val updateMessage by vm.updateMessage.collectAsStateWithLifecycle()
+            val autoUpdate by vm.autoUpdate.collectAsStateWithLifecycle()
+            val canInstall = remember(resume) { AppUpdater.canInstall(ctx) }
+            SectionCard("Aktualizácie") {
+                HintText("Verzia ${AppUpdater.currentVersionName(ctx)} (build ${AppUpdater.currentBuild(ctx)})")
+                when (val u = update) {
+                    is AppUpdater.Check.Available -> {
+                        Text("🆕 Dostupná nová verzia: ${u.release.name}", fontWeight = FontWeight.SemiBold)
+                        Button(onClick = vm::installUpdate, enabled = !updating && canInstall) {
+                            Text(if (updating) "Aktualizujem…" else "Aktualizovať teraz")
+                        }
+                    }
+                    is AppUpdater.Check.UpToDate -> HintText("✅ Máš najnovšiu verziu")
+                    is AppUpdater.Check.Error -> HintText("Kontrola zlyhala: ${u.message}")
+                    null -> HintText("Kontrolujem…")
+                }
+                updateMessage?.let { HintText(it) }
+                if (!canInstall) {
+                    HintText("Na automatické aktualizácie povoľ Alexia Shield inštaláciu appiek (iba raz).")
+                    OutlinedButton(onClick = {
+                        runCatching {
+                            ctx.startActivity(
+                                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + ctx.packageName))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    }) { Text("Povoliť aktualizácie") }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Automaticky aktualizovať", style = MaterialTheme.typography.bodyMedium)
+                        HintText("Kontrola každých 6 hodín, nová verzia sa nainštaluje sama")
+                    }
+                    Switch(checked = autoUpdate, onCheckedChange = vm::setAutoUpdate)
+                }
+                TextButton(onClick = vm::checkUpdate) { Text("Skontrolovať teraz") }
             }
         }
 

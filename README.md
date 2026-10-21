@@ -9,7 +9,9 @@ Lokálna Android appka na ochranu súkromia. Funguje bez rootu a bez servera, v�
 |---|---|---|
 | Prehľad | Skóre ochrany telefónu a stav všetkých ochrán | `ui/screens/OverviewScreen.kt` |
 | Appky | Privacy Score A–F: oprávnenia × typ appky, prístupnosť, sideload, trackery v DEX | `audit/` |
-| Antivírus | Detektor bankových trójskych koní (offline) + kontrola SHA-256 appiek v databáze MalwareBazaar, denne aj na pozadí | `audit/BankerDetector.kt`, `audit/MalwareChecker.kt` |
+| Antivírus | Ochrana v reálnom čase (kontrola každej novej appky), offline + online databáza MalwareBazaar, bankové trójske kone, falošné appky (banky, kuriéri, WhatsApp…), skryté appky, heuristika kódu (miner, ransomvér, SMS, Telegram exfil…), kontrola APK súboru pred inštaláciou | `audit/`, `protection/` |
+| Bezpečnosť telefónu | Zámok obrazovky, USB ladenie, záplaty, root, appky s povolením inštalovať | `core/DeviceSecurity.kt` |
+| Aktualizácie | Appka sa sama aktualizuje z GitHub Releases (každý push = nový build) | `update/` |
 | Odkazy | Varovanie pred podvodnými odkazmi v notifikáciách (SMS, WhatsApp…) + ručná kontrola | `linkscan/` |
 | Firewall | Lokálna VPN: filtrovanie DNS alebo odrezanie internetu vybraným appkám | `firewall/` |
 | Senzory | Výstraha, keď sa kamera alebo mikrofón zapnú pri zamknutom telefóne | `sensors/` |

@@ -7,6 +7,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Automatické aktualizácie Alexia Shield z GitHub Releases -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Audit všetkých appiek. Na Google Play treba zdôvodniť (bezpečnostná appka). -->
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"
@@ -68,5 +71,28 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Upozornenie používateľa, keď iná aplikácia začne používať kameru alebo mikrofón" />
         </service>
+
+        <!-- Ochrana v reálnom čase: kontrola každej novej appky -->
+        <service
+            android:name=".protection.RealtimeProtectionService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Antivírusová kontrola každej novo nainštalovanej aplikácie v reálnom čase" />
+        </service>
+
+        <receiver
+            android:name=".protection.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".update.UpdateStatusReceiver"
+            android:exported="false" />
     </application>
 </manifest>

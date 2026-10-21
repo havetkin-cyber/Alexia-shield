@@ -2,6 +2,7 @@ package sk.alexia.shield
 
 import android.app.Application
 import sk.alexia.shield.audit.ThreatScanWorker
+import sk.alexia.shield.update.UpdateWorker
 import sk.alexia.shield.core.Notifications
 import sk.alexia.shield.core.ShieldLog
 import sk.alexia.shield.firewall.Blocklist
@@ -15,5 +16,6 @@ class ShieldApp : Application() {
         Blocklist.loadAsync(this)
         BlocklistUpdateWorker.schedule(this)
         ThreatScanWorker.schedule(this)
+        UpdateWorker.schedule(this)
     }
 }

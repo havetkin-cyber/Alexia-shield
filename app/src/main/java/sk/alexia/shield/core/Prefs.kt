@@ -52,4 +52,22 @@ object Prefs {
 
     fun malwareCache(ctx: Context): SharedPreferences =
         ctx.applicationContext.getSharedPreferences("malware_cache", Context.MODE_PRIVATE)
+
+    fun hashCache(ctx: Context): SharedPreferences =
+        ctx.applicationContext.getSharedPreferences("hash_cache", Context.MODE_PRIVATE)
+
+    fun heuristicsCache(ctx: Context): SharedPreferences =
+        ctx.applicationContext.getSharedPreferences("heuristics_cache", Context.MODE_PRIVATE)
+
+    fun realtimeEnabled(ctx: Context) = sp(ctx).getBoolean("realtime", true)
+    fun setRealtimeEnabled(ctx: Context, value: Boolean) =
+        sp(ctx).edit().putBoolean("realtime", value).apply()
+
+    fun autoUpdate(ctx: Context) = sp(ctx).getBoolean("auto_update", true)
+    fun setAutoUpdate(ctx: Context, value: Boolean) =
+        sp(ctx).edit().putBoolean("auto_update", value).apply()
+
+    fun lastNotifiedUpdate(ctx: Context) = sp(ctx).getInt("last_update_notified", 0)
+    fun setLastNotifiedUpdate(ctx: Context, build: Int) =
+        sp(ctx).edit().putInt("last_update_notified", build).apply()
 }

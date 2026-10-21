@@ -62,6 +62,40 @@ object Notifications {
         NotificationManagerCompat.from(ctx).notify(nextId.incrementAndGet(), notification)
     }
 
+    /** Tichá informačná notifikácia (napr. „appka je bezpečná“). */
+    fun info(ctx: Context, title: String, text: String, tab: String? = null) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) return
+        val notification = NotificationCompat.Builder(ctx, CH_SERVICE)
+            .setSmallIcon(R.drawable.ic_shield)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setAutoCancel(true)
+            .setContentIntent(openAppIntent(ctx, tab))
+            .build()
+        NotificationManagerCompat.from(ctx).notify(nextId.incrementAndGet(), notification)
+    }
+
+    /** Notifikácia s vlastnou akciou (napr. potvrdenie inštalácie aktualizácie). */
+    fun action(ctx: Context, id: Int, title: String, text: String, intent: PendingIntent) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) return
+        val notification = NotificationCompat.Builder(ctx, CH_ALERTS)
+            .setSmallIcon(R.drawable.ic_shield)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(intent)
+            .build()
+        NotificationManagerCompat.from(ctx).notify(id, notification)
+    }
+
     fun serviceNotification(ctx: Context, title: String, text: String, tab: String?): Notification =
         NotificationCompat.Builder(ctx, CH_SERVICE)
             .setSmallIcon(R.drawable.ic_shield)

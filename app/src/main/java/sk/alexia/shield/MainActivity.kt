@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.mutableStateOf
+import sk.alexia.shield.protection.RealtimeProtectionService
 import sk.alexia.shield.ui.ShieldRoot
 import sk.alexia.shield.ui.theme.ShieldTheme
 
@@ -21,6 +22,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        RealtimeProtectionService.startIfEnabled(this)
         requestedTab.value = intent?.getStringExtra(EXTRA_TAB)
         setContent {
             ShieldTheme {

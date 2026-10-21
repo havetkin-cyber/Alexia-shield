@@ -33,7 +33,10 @@ data class AppRisk(
     val malware: String? = null,
     /** Appka má kombináciu schopností typickú pre bankové trójske kone. */
     val banker: Boolean = false,
+    /** Krátky popis hrozby, ak appka nie je známy malvér, ale správa sa podozrivo. */
+    val threat: String? = null,
 ) {
+    val isThreat: Boolean get() = malware != null || threat != null
     val grade: Char get() = PrivacyAuditor.grade(score)
 }
 
@@ -72,6 +75,28 @@ object PrivacyAuditor {
         else -> 'F'
     }
 
+    /** Stav telefónu, ktorý potrebuje audit každej appky. */
+    private class Env(
+        val hasUsage: Boolean,
+        val lastUsed: Map<String, Long>,
+        val enabledA11y: String,
+        val enabledListeners: Set<String>,
+        val activeAdmins: Set<String>,
+    )
+
+    private fun env(ctx: Context) = Env(
+        hasUsage = UsageHelper.hasAccess(ctx),
+        lastUsed = UsageHelper.lastUsedMap(ctx),
+        enabledA11y = Settings.Secure.getString(
+            ctx.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ).orEmpty(),
+        enabledListeners = NotificationManagerCompat.getEnabledListenerPackages(ctx),
+        activeAdmins = runCatching {
+            ctx.getSystemService(DevicePolicyManager::class.java)?.activeAdmins
+                ?.map { it.packageName }?.toSet()
+        }.getOrNull().orEmpty(),
+    )
+
     suspend fun scan(
         ctx: Context,
         includeSystem: Boolean,
@@ -80,58 +105,26 @@ object PrivacyAuditor {
     ): DeviceReport = withContext(Dispatchers.IO) {
         val pm = ctx.packageManager
         val packages = installedPackages(pm, PackageManager.GET_PERMISSIONS)
-        val hasUsage = UsageHelper.hasAccess(ctx)
-        val lastUsed = UsageHelper.lastUsedMap(ctx)
-        val enabledA11y = Settings.Secure.getString(
-            ctx.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-        ).orEmpty()
-        val enabledListeners = NotificationManagerCompat.getEnabledListenerPackages(ctx)
-        val activeAdmins = runCatching {
-            ctx.getSystemService(DevicePolicyManager::class.java)?.activeAdmins
-                ?.map { it.packageName }?.toSet()
-        }.getOrNull().orEmpty()
+        val env = env(ctx)
 
         val candidates = packages.filter { p ->
             val ai = p.applicationInfo
             ai != null && p.packageName != ctx.packageName && (includeSystem || !isSystem(ai))
         }
-
-        // Antivírusová kontrola len pre appky, ktoré si používateľ nainštaloval sám
-        val malwareTargets = if (checkMalware && MalwareChecker.hasKey(ctx)) {
-            candidates.filter { !isSystem(it.applicationInfo!!) }.map { it.packageName }.toSet()
-        } else emptySet()
-        val total = candidates.size + malwareTargets.size
-
-        val audited = candidates.mapIndexed { index, p ->
-            onProgress(index + 1, total)
-            auditPackage(ctx, pm, p, hasUsage, lastUsed, enabledA11y, enabledListeners, activeAdmins)
-        }
+        val online = checkMalware && MalwareChecker.hasKey(ctx)
 
         var checked = 0
         var malwareError: String? = null
-        val byPackage = candidates.associateBy { it.packageName }
-        val results = audited.map { risk ->
-            if (risk.packageName !in malwareTargets || malwareError != null) return@map risk
-            onProgress(candidates.size + checked + 1, total)
-            val ai = byPackage.getValue(risk.packageName).applicationInfo!!
-            val apks = listOfNotNull(ai.sourceDir) + ai.splitSourceDirs.orEmpty()
-            when (val r = MalwareChecker.check(
-                ctx, risk.packageName, byPackage.getValue(risk.packageName).lastUpdateTime, apks
-            )) {
-                is MalwareChecker.Result.Clean -> { checked++; risk }
-                is MalwareChecker.Result.Malware -> {
-                    checked++
-                    val text = "🦠 MALVÉR: ${r.signature} (databáza MalwareBazaar)" +
-                        if (r.tags.isNotEmpty()) " – " + r.tags.take(3).joinToString(", ") else ""
-                    risk.copy(
-                        score = 100,
-                        malware = r.signature,
-                        findings = listOf(Finding(text, 100)) + risk.findings,
-                    )
-                }
-                is MalwareChecker.Result.Error -> { malwareError = r.message; risk }
-            }
-        }.sortedWith(compareByDescending<AppRisk> { it.malware != null }.thenByDescending { it.score })
+        val results = candidates.mapIndexed { index, p ->
+            onProgress(index + 1, candidates.size)
+            val risk = auditPackage(ctx, pm, p, env)
+            if (!checkMalware || isSystem(p.applicationInfo!!)) return@mapIndexed risk
+            val r = MalwareChecker.check(ctx, p.packageName, p.lastUpdateTime, apkPaths(p), online && malwareError == null)
+            if (r is MalwareChecker.Result.Error) malwareError = r.message else checked++
+            applyMalware(risk, r)
+        }.sortedWith(compareByDescending<AppRisk> { it.malware != null }
+            .thenByDescending { it.threat != null }
+            .thenByDescending { it.score })
 
         notifyThreats(ctx, results)
 
@@ -143,6 +136,29 @@ object PrivacyAuditor {
         DeviceReport(results, protection, System.currentTimeMillis(), checked, malwareError)
     }
 
+    /** Okamžitá kontrola jednej appky (napr. hneď po inštalácii). */
+    suspend fun scanSingle(ctx: Context, packageName: String): AppRisk? = withContext(Dispatchers.IO) {
+        val pm = ctx.packageManager
+        val p = runCatching { packageInfo(pm, packageName, PackageManager.GET_PERMISSIONS) }.getOrNull()
+            ?: return@withContext null
+        if (p.applicationInfo == null || packageName == ctx.packageName) return@withContext null
+        val risk = auditPackage(ctx, pm, p, env(ctx))
+        val r = MalwareChecker.check(ctx, packageName, p.lastUpdateTime, apkPaths(p), MalwareChecker.hasKey(ctx))
+        applyMalware(risk, r)
+    }
+
+    private fun apkPaths(p: PackageInfo): List<String> {
+        val ai = p.applicationInfo ?: return emptyList()
+        return listOfNotNull(ai.sourceDir) + ai.splitSourceDirs.orEmpty()
+    }
+
+    private fun applyMalware(risk: AppRisk, r: MalwareChecker.Result): AppRisk {
+        if (r !is MalwareChecker.Result.Malware) return risk
+        val text = "🦠 MALVÉR: ${r.signature} (databáza MalwareBazaar" + (if (r.offline) ", offline" else "") + ")" +
+            if (r.tags.isNotEmpty()) " – " + r.tags.take(3).joinToString(", ") else ""
+        return risk.copy(score = 100, malware = r.signature, findings = listOf(Finding(text, 100)) + risk.findings)
+    }
+
     /** Upozorní na nové nálezy malvéru a bankových trójskych koní (každý len raz). */
     private fun notifyThreats(ctx: Context, results: List<AppRisk>) {
         val already = Prefs.notifiedThreats(ctx)
@@ -150,7 +166,7 @@ object PrivacyAuditor {
         results.forEach { app ->
             val id = when {
                 app.malware != null -> "M:${app.packageName}"
-                app.banker -> "B:${app.packageName}"
+                app.threat != null -> "T:${app.packageName}"
                 else -> return@forEach
             }
             current += id
@@ -158,7 +174,7 @@ object PrivacyAuditor {
             val title = if (app.malware != null) "🦠 Nájdený malvér: ${app.label}"
             else "⚠️ Podozrivá appka: ${app.label}"
             val detail = if (app.malware != null) "${app.malware} – odporúčame appku hneď odinštalovať."
-            else "Má schopnosti typické pre bankové trójske kone. Ak ju nepoznáš, odinštaluj ju."
+            else "${app.threat}. Ak appku nepoznáš alebo si ju neinštaloval vedome, odinštaluj ju."
             ShieldLog.add(
                 ShieldEvent(
                     System.currentTimeMillis(), EventType.MALWARE,
@@ -176,12 +192,13 @@ object PrivacyAuditor {
         ctx: Context,
         pm: PackageManager,
         p: PackageInfo,
-        hasUsage: Boolean,
-        lastUsed: Map<String, Long>,
-        enabledA11y: String,
-        enabledListeners: Set<String>,
-        activeAdmins: Set<String>,
+        env: Env,
     ): AppRisk {
+        val hasUsage = env.hasUsage
+        val lastUsed = env.lastUsed
+        val enabledA11y = env.enabledA11y
+        val enabledListeners = env.enabledListeners
+        val activeAdmins = env.activeAdmins
         val ai = p.applicationInfo!!
         val label = runCatching { pm.getApplicationLabel(ai).toString() }.getOrDefault(p.packageName)
         val findings = mutableListOf<Finding>()
@@ -236,7 +253,7 @@ object PrivacyAuditor {
 
         // 2) Silné systémové služby
         val detail = runCatching {
-            packageInfo(pm, p.packageName, PackageManager.GET_SERVICES or PackageManager.GET_RECEIVERS)
+            packageInfo(pm, p.packageName, PackageManager.GET_SERVICES or PackageManager.GET_RECEIVERS or signingFlag())
         }.getOrNull()
         detail?.services?.forEach { s ->
             when (s.permission) {
@@ -307,6 +324,25 @@ object PrivacyAuditor {
             }
         }
 
+        // 7) Falošné, skryté a neoficiálne appky + heuristika kódu (len appky mimo obchodu)
+        var threat: String? = if (banker) "Možný bankový trójsky kôň" else null
+        if (!isSystem(ai)) {
+            ThreatHeuristics.impersonation(label, p.packageName, sideloaded)?.let {
+                findings += it
+                if (threat == null) threat = "Možná falošná appka"
+            }
+            val hasLauncher = runCatching { pm.getLaunchIntentForPackage(p.packageName) != null }.getOrDefault(true)
+            ThreatHeuristics.hiddenApp(hasLauncher, sideloaded)?.let { findings += it }
+            detail?.let { d -> ThreatHeuristics.debugSigned(d, sideloaded)?.let { findings += it } }
+            if (sideloaded) {
+                val indicators = CodeHeuristics.scanCached(ctx, p.packageName, p.lastUpdateTime, apks)
+                CodeHeuristics.evaluate(indicators)?.let {
+                    findings += it
+                    if (threat == null && it.points >= 40) threat = "Podozrivý kód typický pre malvér"
+                }
+            }
+        }
+
         val unique = findings.distinctBy { it.text }.sortedByDescending { it.points }
         return AppRisk(
             packageName = p.packageName,
@@ -316,8 +352,13 @@ object PrivacyAuditor {
             trackers = trackers,
             isSystem = isSystem(ai),
             banker = banker,
+            threat = threat,
         )
     }
+
+    @Suppress("DEPRECATION")
+    private fun signingFlag(): Int =
+        if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
 
     fun isSystem(ai: ApplicationInfo): Boolean =
         (ai.flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0

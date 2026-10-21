@@ -16,6 +16,8 @@ import java.util.concurrent.TimeUnit
 class ThreatScanWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
 
     override suspend fun doWork(): Result {
+        val key = sk.alexia.shield.core.Prefs.malwareApiKey(applicationContext)
+        if (key.isNotBlank()) MalwareDatabase.update(applicationContext, key)
         PrivacyAuditor.scan(applicationContext, includeSystem = false)
         return Result.success()
     }

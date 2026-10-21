@@ -24,7 +24,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import sk.alexia.shield.audit.ApkFileScanner
 import sk.alexia.shield.audit.DeviceReport
+import sk.alexia.shield.protection.RealtimeProtectionService
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.Switch
 import sk.alexia.shield.audit.MalwareChecker
 import sk.alexia.shield.ui.SectionCard
 import androidx.compose.material3.Checkbox
@@ -110,14 +116,34 @@ private val DangerRed = Color(0xFFD32F2F)
 
 @Composable
 private fun AntivirusCard(vm: MainViewModel, report: DeviceReport?, scanning: Boolean) {
+    val ctx = LocalContext.current
     val keySet by vm.malwareKeySet.collectAsStateWithLifecycle()
     val message by vm.keyMessage.collectAsStateWithLifecycle()
     val verifying by vm.verifyingKey.collectAsStateWithLifecycle()
+    val realtime by vm.realtime.collectAsStateWithLifecycle()
+    val realtimeRunning by RealtimeProtectionService.running.collectAsStateWithLifecycle()
+    val dbSize by vm.dbSize.collectAsStateWithLifecycle()
+    val dbUpdated by vm.dbUpdated.collectAsStateWithLifecycle()
+    val dbBusy by vm.dbBusy.collectAsStateWithLifecycle()
+    val dbMessage by vm.dbMessage.collectAsStateWithLifecycle()
+    val apkVerdict by vm.apkVerdict.collectAsStateWithLifecycle()
+    val apkScanning by vm.apkScanning.collectAsStateWithLifecycle()
     val uri = LocalUriHandler.current
     var keyInput by rememberSaveable { mutableStateOf("") }
 
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { picked ->
+        if (picked != null) {
+            val name = runCatching {
+                ctx.contentResolver.query(picked, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) c.getString(0) else null
+                }
+            }.getOrNull() ?: "súbor.apk"
+            vm.scanApk(picked, name)
+        }
+    }
+
     val malware = report?.apps.orEmpty().filter { it.malware != null }
-    val bankers = report?.apps.orEmpty().filter { it.banker && it.malware == null }
+    val threats = report?.apps.orEmpty().filter { it.threat != null && it.malware == null }
 
     SectionCard("Antivírus") {
         when {
@@ -125,27 +151,41 @@ private fun AntivirusCard(vm: MainViewModel, report: DeviceReport?, scanning: Bo
                 "🦠 Nájdený malvér: " + malware.joinToString { it.label },
                 color = DangerRed, fontWeight = FontWeight.Bold,
             )
-            bankers.isNotEmpty() -> Text(
-                "⚠️ Podozrivé appky (bankový trójsky kôň): " + bankers.joinToString { it.label },
+            threats.isNotEmpty() -> Text(
+                "⚠️ Podozrivé appky: " + threats.joinToString { "${it.label} (${it.threat})" },
                 color = DangerRed, fontWeight = FontWeight.SemiBold,
             )
-            report != null && !scanning -> Text("✅ Žiadne známe hrozby", fontWeight = FontWeight.SemiBold)
+            scanning -> Text("Kontrolujem appky…", fontWeight = FontWeight.SemiBold)
+            report != null -> Text("✅ Žiadne známe hrozby", fontWeight = FontWeight.SemiBold)
         }
-        HintText("Detektor bankových trójskych koní beží vždy, aj bez internetu.")
 
+        // Ochrana v reálnom čase
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Ochrana v reálnom čase", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                HintText(if (realtime && realtimeRunning) "Každá nová appka sa skontroluje hneď po inštalácii" else "Vypnutá")
+            }
+            Switch(checked = realtime, onCheckedChange = vm::setRealtime)
+        }
+
+        // Databáza malvéru
         if (keySet) {
+            val updated = if (dbUpdated > 0) java.text.SimpleDateFormat("d. M. HH:mm", java.util.Locale.forLanguageTag("sk")).format(java.util.Date(dbUpdated)) else "nikdy"
+            HintText("Offline databáza: $dbSize vzoriek Android malvéru (aktualizované $updated). Online overenie v celej databáze MalwareBazaar je zapnuté.")
             val r = report
             when {
-                scanning -> HintText("Prebieha kontrola…")
                 r?.malwareError != null -> Text(r.malwareError, color = DangerRed, style = MaterialTheme.typography.bodySmall)
-                r != null && r.malwareChecked > 0 ->
-                    HintText("Databáza MalwareBazaar: overených ${r.malwareChecked} appiek. Kontrola beží aj raz denne na pozadí.")
+                r != null && r.malwareChecked > 0 && !scanning -> HintText("Overených ${r.malwareChecked} appiek.")
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Button(onClick = vm::runAudit, enabled = !scanning) { Text("Skontrolovať teraz") }
                 Spacer(Modifier.width(8.dp))
-                TextButton(onClick = vm::removeMalwareKey) { Text("Odstrániť kľúč") }
+                TextButton(onClick = { vm.updateDatabase() }, enabled = !dbBusy) {
+                    Text(if (dbBusy) "Sťahujem…" else "Aktualizovať databázu")
+                }
             }
+            dbMessage?.let { HintText(it) }
+            TextButton(onClick = vm::removeMalwareKey) { Text("Odstrániť kľúč") }
         } else {
             HintText(
                 "Na kontrolu podľa databázy známeho malvéru (MalwareBazaar) treba bezplatný kľúč. " +
@@ -165,6 +205,44 @@ private fun AntivirusCard(vm: MainViewModel, report: DeviceReport?, scanning: Bo
             }
         }
         message?.let { HintText(it) }
+
+        // Kontrola APK súboru pred inštaláciou
+        OutlinedButton(
+            onClick = { picker.launch(arrayOf("application/vnd.android.package-archive", "application/octet-stream")) },
+            enabled = !apkScanning,
+        ) { Text(if (apkScanning) "Kontrolujem súbor…" else "Skontrolovať APK súbor pred inštaláciou") }
+        apkVerdict?.let { v -> ApkVerdictView(v, onClose = vm::clearApkVerdict) }
+    }
+}
+
+@Composable
+private fun ApkVerdictView(v: ApkFileScanner.Verdict, onClose: () -> Unit) {
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (v.dangerous) DangerRed.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant
+        ),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                when {
+                    v.malware != null -> "🦠 NEINŠTALUJ – je to malvér"
+                    v.dangerous -> "⚠️ Neodporúčame inštalovať"
+                    v.score >= 25 -> "Opatrne – appka má rizikové vlastnosti"
+                    v.error != null && v.sha256.isEmpty() -> "Kontrola sa nepodarila"
+                    else -> "✅ Žiadne známe hrozby"
+                },
+                fontWeight = FontWeight.Bold,
+                color = if (v.dangerous) DangerRed else MaterialTheme.colorScheme.onSurface,
+            )
+            HintText(listOfNotNull(v.appLabel, v.packageName, v.fileName).distinct().joinToString(" • "))
+            v.findings.forEach { f ->
+                Text("• ${f.text}", style = MaterialTheme.typography.bodySmall)
+            }
+            v.error?.let { HintText(it) }
+            if (v.sha256.isNotEmpty()) HintText("SHA-256: ${v.sha256.take(16)}…")
+            TextButton(onClick = onClose) { Text("Zavrieť") }
+        }
     }
 }
 
@@ -177,7 +255,7 @@ private fun AppCard(app: AppRisk, expanded: Boolean, onToggle: () -> Unit) {
         }.getOrNull()
     }
 
-    val threat = app.malware != null || app.banker
+    val threat = app.isThreat
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
         shape = RoundedCornerShape(16.dp),
@@ -194,7 +272,7 @@ private fun AppCard(app: AppRisk, expanded: Boolean, onToggle: () -> Unit) {
                     Text(app.label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     when {
                         app.malware != null -> Text("🦠 Malvér: ${app.malware}", color = DangerRed, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
-                        app.banker -> Text("⚠️ Možný bankový trójsky kôň", color = DangerRed, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                        app.threat != null -> Text("⚠️ ${app.threat}", color = DangerRed, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
                         else -> HintText("Riziko ${app.score}/100 • ${app.findings.size} zistení")
                     }
                 }
