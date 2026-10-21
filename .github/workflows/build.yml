@@ -22,7 +22,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Build debug APK
+        env:
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
         run: |
+          if [ -n "$SIGNING_PASSWORD" ]; then echo "Podpisujem stálym kľúčom"; else echo "::warning::Chýba secret SIGNING_PASSWORD – APK bude podpísané dočasným kľúčom"; fi
           chmod +x gradlew
           ./gradlew assembleDebug --stacktrace
 

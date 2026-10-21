@@ -16,8 +16,26 @@ android {
         versionName = "0.2.0"
     }
 
+    // Stály podpisový kľúč: zašifrovaný súbor je v repe, heslo je GitHub Secret SIGNING_PASSWORD.
+    // Bez hesla (napr. lokálne v Android Studiu) sa použije bežný debug kľúč.
+    val signingPassword = System.getenv("SIGNING_PASSWORD").orEmpty()
+    val keystoreFile = rootProject.file("signing/alexia-shield.p12")
+    val stableSigning = if (signingPassword.isNotEmpty() && keystoreFile.exists()) {
+        signingConfigs.create("stable") {
+            storeFile = keystoreFile
+            storeType = "PKCS12"
+            storePassword = signingPassword
+            keyAlias = "alexia"
+            keyPassword = signingPassword
+        }
+    } else null
+
     buildTypes {
+        debug {
+            if (stableSigning != null) signingConfig = stableSigning
+        }
         release {
+            if (stableSigning != null) signingConfig = stableSigning
             isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
