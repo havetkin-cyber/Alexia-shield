@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.png" width="160" alt="Alexia Shield logo"></p>
+
 # Alexia Shield
 
 Lokálna Android appka na ochranu súkromia. Funguje bez rootu a bez servera, všetko beží v telefóne.

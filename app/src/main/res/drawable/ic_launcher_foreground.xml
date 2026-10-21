@@ -1,16 +1,35 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- Štít s gradientom -->
+    <path android:pathData="M54,27 L78,35.5 L78,53 C78,67.5 68,78.5 54,83 C40,78.5 30,67.5 30,53 L30,35.5 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="34" android:startY="29"
+                android:endX="74" android:endY="81">
+                <item android:offset="0" android:color="#FF4BE3A4" />
+                <item android:offset="1" android:color="#FF1E9BFF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Jemný odlesk na ľavej polovici -->
     <path
-        android:fillColor="#3DDC97"
-        android:pathData="M54,28 L76,36 L76,53 C76,67 66.5,77.5 54,82 C41.5,77.5 32,67 32,53 L32,36 Z" />
+        android:fillColor="#26FFFFFF"
+        android:pathData="M54,27 L54,83 C40,78.5 30,67.5 30,53 L30,35.5 Z" />
+    <!-- Písmeno A -->
     <path
         android:fillColor="#00000000"
-        android:strokeColor="#0B1F3A"
+        android:strokeColor="#FF0B1F3A"
         android:strokeWidth="5"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
-        android:pathData="M44,55 L51,62 L65,47" />
+        android:pathData="M40,70 L54,40 L68,70" />
+    <!-- Kľúčová dierka namiesto priečky -->
+    <path
+        android:fillColor="#FF0B1F3A"
+        android:pathData="M51,55 a3,3 0,1 1,6 0 a3,3 0,1 1,-6 0 z M52.7,56.8 L55.3,56.8 L56.1,63.2 L51.9,63.2 Z" />
 </vector>
