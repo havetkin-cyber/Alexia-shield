@@ -193,21 +193,45 @@ object PrivacyAuditor {
 
         val requested = p.requestedPermissions.orEmpty()
         val flags = p.requestedPermissionsFlags
+        // Oprávnenia sa nesčitujú lineárne: appka typu WhatsApp ich má veľa a väčšina je pre ňu normálna.
+        // Bežné oprávnenia idú do „klesajúceho“ súčtu (max. ~35 b.), nesúlad pri jednoduchých appkách
+        // (baterka s kontaktmi…) sa pripočíta zvlášť (max. 30 b.).
+        data class PermHit(val text: String, val raw: Double, val lightMismatch: Boolean)
+        val permHits = mutableListOf<PermHit>()
         requested.forEachIndexed { i, perm ->
             val rule = PermissionWeights.rules[perm] ?: return@forEachIndexed
             val granted = flags != null && i < flags.size &&
                 (flags[i] and PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0
             val mismatch = expected != null && rule.group !in expected
+            val normal = expected != null && rule.group in expected
             var pts = rule.weight.toDouble()
             if (!granted) pts *= 0.3
-            if (mismatch) pts *= if (lightweight) 2.5 else 1.5
+            pts *= when {
+                mismatch && lightweight -> 2.5
+                mismatch -> 1.5
+                normal -> 0.25
+                else -> 0.6 // kategória neznáma
+            }
             val text = buildString {
                 append(rule.label)
                 if (!granted) append(" (nepovolené)")
                 if (mismatch) append(" – nesedí s typom appky")
+                else if (normal) append(" – bežné pre tento typ appky")
             }
-            val rounded = pts.roundToInt()
-            if (rounded >= 1) findings += Finding(text, rounded)
+            permHits += PermHit(text, pts, mismatch && lightweight)
+        }
+        val poolRaw = permHits.filterNot { it.lightMismatch }.sumOf { it.raw }
+        val lightRaw = permHits.filter { it.lightMismatch }.sumOf { it.raw }
+        val poolScore = 35.0 * (1 - kotlin.math.exp(-poolRaw / 60.0))
+        val lightScore = minOf(30.0, lightRaw * 0.5)
+        permHits.forEach { h ->
+            val share = if (h.lightMismatch) {
+                if (lightRaw > 0) h.raw / lightRaw * lightScore else 0.0
+            } else {
+                if (poolRaw > 0) h.raw / poolRaw * poolScore else 0.0
+            }
+            val rounded = share.roundToInt()
+            if (rounded >= 1) findings += Finding(h.text, rounded)
         }
 
         // 2) Silné systémové služby

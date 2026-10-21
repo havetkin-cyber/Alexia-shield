@@ -81,6 +81,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } finally {
                 _progress.value = null
+                if (_keyMessage.value?.startsWith("Kľúč je platný") == true) _keyMessage.value = null
             }
         }
     }
