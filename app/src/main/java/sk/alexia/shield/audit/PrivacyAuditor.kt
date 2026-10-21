@@ -1,0 +1,214 @@
+package sk.alexia.shield.audit
+
+import android.content.Context
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
+import androidx.core.app.NotificationManagerCompat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import sk.alexia.shield.core.UsageHelper
+import kotlin.math.roundToInt
+
+data class Finding(val text: String, val points: Int)
+
+data class AppRisk(
+    val packageName: String,
+    val label: String,
+    /** 0 = bez rizika, 100 = maximálne riziko. */
+    val score: Int,
+    val findings: List<Finding>,
+    val trackers: List<String>,
+    val isSystem: Boolean,
+) {
+    val grade: Char get() = PrivacyAuditor.grade(score)
+}
+
+data class DeviceReport(
+    val apps: List<AppRisk>,
+    /** 0–100, vyššie = lepšie chránený telefón. */
+    val protectionScore: Int,
+    val scannedAt: Long,
+)
+
+object PrivacyAuditor {
+    private const val DAY = 24L * 60 * 60 * 1000
+
+    private val trustedInstallers = setOf(
+        "com.android.vending", "com.sec.android.app.samsungapps", "com.huawei.appmarket",
+        "com.amazon.venezia", "org.fdroid.fdroid", "com.xiaomi.market", "com.heytap.market",
+        "com.oppo.market", "com.google.android.feedback",
+    )
+
+    /** Appky, ktoré by nemali potrebovať takmer žiadne citlivé oprávnenia. */
+    private val lightweightHints = listOf(
+        "flashlight", "torch", "svietidl", "baterk", "calculator", "kalkul", "compass", "kompas",
+        "qrscan", "qr_scan", "qrcode", "qrreader", "wallpaper", "tapet", "ringtone", "vyzvan",
+    )
+
+    fun grade(score: Int): Char = when {
+        score <= 10 -> 'A'
+        score <= 25 -> 'B'
+        score <= 40 -> 'C'
+        score <= 60 -> 'D'
+        score <= 80 -> 'E'
+        else -> 'F'
+    }
+
+    suspend fun scan(
+        ctx: Context,
+        includeSystem: Boolean,
+        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
+    ): DeviceReport = withContext(Dispatchers.IO) {
+        val pm = ctx.packageManager
+        val packages = installedPackages(pm, PackageManager.GET_PERMISSIONS)
+        val hasUsage = UsageHelper.hasAccess(ctx)
+        val lastUsed = UsageHelper.lastUsedMap(ctx)
+        val enabledA11y = Settings.Secure.getString(
+            ctx.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ).orEmpty()
+        val enabledListeners = NotificationManagerCompat.getEnabledListenerPackages(ctx)
+
+        val candidates = packages.filter { p ->
+            val ai = p.applicationInfo
+            ai != null && p.packageName != ctx.packageName && (includeSystem || !isSystem(ai))
+        }
+
+        val results = candidates.mapIndexed { index, p ->
+            onProgress(index + 1, candidates.size)
+            auditPackage(ctx, pm, p, hasUsage, lastUsed, enabledA11y, enabledListeners)
+        }.sortedByDescending { it.score }
+
+        val protection = if (results.isEmpty()) 100 else {
+            val avg = results.map { it.score }.average()
+            val worst = results.first().score
+            (100 - (avg * 0.6 + worst * 0.4)).roundToInt().coerceIn(0, 100)
+        }
+        DeviceReport(results, protection, System.currentTimeMillis())
+    }
+
+    private fun auditPackage(
+        ctx: Context,
+        pm: PackageManager,
+        p: PackageInfo,
+        hasUsage: Boolean,
+        lastUsed: Map<String, Long>,
+        enabledA11y: String,
+        enabledListeners: Set<String>,
+    ): AppRisk {
+        val ai = p.applicationInfo!!
+        val label = runCatching { pm.getApplicationLabel(ai).toString() }.getOrDefault(p.packageName)
+        val findings = mutableListOf<Finding>()
+
+        // 1) Oprávnenia × nesúlad s typom appky
+        val nameKey = (p.packageName + " " + label).lowercase()
+        val lightweight = lightweightHints.any { it in nameKey }
+        val expected = if (lightweight) emptySet() else PermissionWeights.expectedGroups(ai.category)
+
+        val requested = p.requestedPermissions.orEmpty()
+        val flags = p.requestedPermissionsFlags
+        requested.forEachIndexed { i, perm ->
+            val rule = PermissionWeights.rules[perm] ?: return@forEachIndexed
+            val granted = flags != null && i < flags.size &&
+                (flags[i] and PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0
+            val mismatch = expected != null && rule.group !in expected
+            var pts = rule.weight.toDouble()
+            if (!granted) pts *= 0.3
+            if (mismatch) pts *= if (lightweight) 2.5 else 1.5
+            val text = buildString {
+                append(rule.label)
+                if (!granted) append(" (nepovolené)")
+                if (mismatch) append(" – nesedí s typom appky")
+            }
+            val rounded = pts.roundToInt()
+            if (rounded >= 1) findings += Finding(text, rounded)
+        }
+
+        // 2) Silné systémové služby
+        val detail = runCatching {
+            packageInfo(pm, p.packageName, PackageManager.GET_SERVICES or PackageManager.GET_RECEIVERS)
+        }.getOrNull()
+        detail?.services?.forEach { s ->
+            when (s.permission) {
+                "android.permission.BIND_ACCESSIBILITY_SERVICE" -> {
+                    val on = enabledA11y.contains(p.packageName + "/")
+                    findings += if (on) Finding("Služba prístupnosti je ZAPNUTÁ – vidí obsah obrazovky", 30)
+                    else Finding("Obsahuje službu prístupnosti (vypnutú)", 8)
+                }
+                "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" -> {
+                    val on = p.packageName in enabledListeners
+                    findings += if (on) Finding("Číta všetky notifikácie (zapnuté)", 15)
+                    else Finding("Môže čítať notifikácie (vypnuté)", 5)
+                }
+                "android.permission.BIND_VPN_SERVICE" -> findings += Finding("Obsahuje VPN službu", 6)
+            }
+        }
+        detail?.receivers?.forEach { r ->
+            if (r.permission == "android.permission.BIND_DEVICE_ADMIN") {
+                findings += Finding("Môže sa stať správcom zariadenia", 20)
+            }
+        }
+
+        // 3) Pôvod inštalácie
+        if (!isSystem(ai)) {
+            val installer = installerOf(pm, p.packageName)
+            if (installer !in trustedInstallers) {
+                findings += Finding(
+                    "Nainštalovaná mimo obchodu" + (installer?.let { " ($it)" } ?: ""), 10
+                )
+            }
+        }
+
+        // 4) Nepoužívané appky
+        if (hasUsage) {
+            val ref = maxOf(lastUsed[p.packageName] ?: 0L, p.firstInstallTime)
+            if (System.currentTimeMillis() - ref >= 90 * DAY) {
+                findings += Finding("Nepoužitá aspoň 90 dní – zváž odinštalovanie", 5)
+            }
+        }
+
+        // 5) Sledovacie SDK
+        val apks = listOfNotNull(ai.sourceDir) + ai.splitSourceDirs.orEmpty()
+        val trackers = TrackerDetector.scanCached(ctx, p.packageName, p.lastUpdateTime, apks)
+        if (trackers.isNotEmpty()) {
+            findings += Finding("Sledovacie SDK: ${trackers.size}", (trackers.size * 5).coerceAtMost(25))
+        }
+
+        val unique = findings.distinctBy { it.text }.sortedByDescending { it.points }
+        return AppRisk(
+            packageName = p.packageName,
+            label = label,
+            score = unique.sumOf { it.points }.coerceAtMost(100),
+            findings = unique,
+            trackers = trackers,
+            isSystem = isSystem(ai),
+        )
+    }
+
+    fun isSystem(ai: ApplicationInfo): Boolean =
+        (ai.flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0
+
+    @Suppress("DEPRECATION")
+    private fun installedPackages(pm: PackageManager, flags: Int): List<PackageInfo> =
+        if (Build.VERSION.SDK_INT >= 33) {
+            pm.getInstalledPackages(PackageManager.PackageInfoFlags.of(flags.toLong()))
+        } else {
+            pm.getInstalledPackages(flags)
+        }
+
+    @Suppress("DEPRECATION")
+    private fun packageInfo(pm: PackageManager, pkg: String, flags: Int): PackageInfo =
+        if (Build.VERSION.SDK_INT >= 33) {
+            pm.getPackageInfo(pkg, PackageManager.PackageInfoFlags.of(flags.toLong()))
+        } else {
+            pm.getPackageInfo(pkg, flags)
+        }
+
+    @Suppress("DEPRECATION")
+    private fun installerOf(pm: PackageManager, pkg: String): String? = runCatching {
+        if (Build.VERSION.SDK_INT >= 30) pm.getInstallSourceInfo(pkg).installingPackageName
+        else pm.getInstallerPackageName(pkg)
+    }.getOrNull()
+}
