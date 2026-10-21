@@ -13,7 +13,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-        versionName = "0.3.0"
+        versionName = "0.3.1"
     }
 
     // Stály podpisový kľúč: zašifrovaný súbor je v repe, heslo je GitHub Secret SIGNING_PASSWORD.

@@ -58,6 +58,9 @@ object PrivacyAuditor {
         "com.android.vending", "com.sec.android.app.samsungapps", "com.huawei.appmarket",
         "com.amazon.venezia", "org.fdroid.fdroid", "com.xiaomi.market", "com.heytap.market",
         "com.oppo.market", "com.google.android.feedback",
+        // Obchody a aktualizátory výrobcov (Xiaomi GetApps, systémové aktualizácie MIUI/HyperOS, Honor, Vivo)
+        "com.xiaomi.mipicks", "com.xiaomi.discover", "com.hihonor.appmarket", "com.vivo.appstore",
+        "com.bbk.appstore", "com.sec.android.app.samsungapps.una",
     )
 
     /** Appky, ktoré by nemali potrebovať takmer žiadne citlivé oprávnenia. */
@@ -280,11 +283,11 @@ object PrivacyAuditor {
         var sideloaded = false
         if (!isSystem(ai)) {
             val installer = installerOf(pm, p.packageName)
-            if (installer !in trustedInstallers) {
+            if (installer == null || isPreinstalled(ai)) {
+                // Bez záznamu o inštalátore = appka predinštalovaná výrobcom (napr. Xiaomi), nie stiahnutá
+            } else if (installer !in trustedInstallers) {
                 sideloaded = true
-                findings += Finding(
-                    "Nainštalovaná mimo obchodu" + (installer?.let { " ($it)" } ?: ""), 10
-                )
+                findings += Finding("Nainštalovaná mimo obchodu ($installer)", 10)
             }
         }
 
@@ -359,6 +362,14 @@ object PrivacyAuditor {
     @Suppress("DEPRECATION")
     private fun signingFlag(): Int =
         if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+
+    /** Appky, ktoré výrobca dodal s telefónom (aj keď sa dajú odinštalovať). */
+    private fun isPreinstalled(ai: ApplicationInfo): Boolean {
+        val dir = ai.sourceDir.orEmpty()
+        return listOf("/system/", "/product/", "/vendor/", "/system_ext/", "/preload/", "/data-app/", "/cust/")
+            .any { dir.startsWith(it) || dir.contains("/data-app/") } ||
+            (ai.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+    }
 
     fun isSystem(ai: ApplicationInfo): Boolean =
         (ai.flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0
