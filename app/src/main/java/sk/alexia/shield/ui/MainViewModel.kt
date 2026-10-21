@@ -6,7 +6,11 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import sk.alexia.shield.audit.MalwareChecker
+import sk.alexia.shield.core.Prefs
 import sk.alexia.shield.audit.DeviceReport
 import sk.alexia.shield.audit.PrivacyAuditor
 
@@ -22,8 +26,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _includeSystem = MutableStateFlow(false)
     val includeSystem: StateFlow<Boolean> = _includeSystem.asStateFlow()
 
+    private val _malwareKeySet = MutableStateFlow(MalwareChecker.hasKey(app))
+    val malwareKeySet: StateFlow<Boolean> = _malwareKeySet.asStateFlow()
+
+    /** Správa po overení kľúča (null = nič na zobrazenie). */
+    private val _keyMessage = MutableStateFlow<String?>(null)
+    val keyMessage: StateFlow<String?> = _keyMessage.asStateFlow()
+
+    private val _verifyingKey = MutableStateFlow(false)
+    val verifyingKey: StateFlow<Boolean> = _verifyingKey.asStateFlow()
+
     init {
         runAudit()
+    }
+
+    fun saveMalwareKey(key: String) {
+        val trimmed = key.trim()
+        if (trimmed.isEmpty() || _verifyingKey.value) return
+        _verifyingKey.value = true
+        _keyMessage.value = null
+        viewModelScope.launch {
+            val error = withContext(Dispatchers.IO) { MalwareChecker.verifyKey(trimmed) }
+            _verifyingKey.value = false
+            if (error == null) {
+                Prefs.setMalwareApiKey(getApplication(), trimmed)
+                _malwareKeySet.value = true
+                _keyMessage.value = "Kľúč je platný ✓ Spúšťam antivírusovú kontrolu…"
+                runAudit()
+            } else {
+                _keyMessage.value = error
+            }
+        }
+    }
+
+    fun removeMalwareKey() {
+        Prefs.setMalwareApiKey(getApplication(), "")
+        _malwareKeySet.value = false
+        _keyMessage.value = null
     }
 
     fun setIncludeSystem(value: Boolean) {

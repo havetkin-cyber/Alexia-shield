@@ -40,4 +40,16 @@ object Prefs {
 
     fun trackerCache(ctx: Context): SharedPreferences =
         ctx.applicationContext.getSharedPreferences("tracker_cache", Context.MODE_PRIVATE)
+
+    fun malwareApiKey(ctx: Context): String = sp(ctx).getString("mb_key", "").orEmpty()
+    fun setMalwareApiKey(ctx: Context, key: String) =
+        sp(ctx).edit().putString("mb_key", key.trim()).apply()
+
+    fun notifiedThreats(ctx: Context): Set<String> =
+        sp(ctx).getStringSet("notified_threats", emptySet())?.toSet() ?: emptySet()
+    fun setNotifiedThreats(ctx: Context, ids: Set<String>) =
+        sp(ctx).edit().putStringSet("notified_threats", HashSet(ids)).apply()
+
+    fun malwareCache(ctx: Context): SharedPreferences =
+        ctx.applicationContext.getSharedPreferences("malware_cache", Context.MODE_PRIVATE)
 }

@@ -1,5 +1,6 @@
 package sk.alexia.shield.audit
 
+import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
@@ -9,6 +10,12 @@ import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import sk.alexia.shield.core.EventType
+import sk.alexia.shield.core.Notifications
+import sk.alexia.shield.core.Prefs
+import sk.alexia.shield.core.Severity
+import sk.alexia.shield.core.ShieldEvent
+import sk.alexia.shield.core.ShieldLog
 import sk.alexia.shield.core.UsageHelper
 import kotlin.math.roundToInt
 
@@ -22,6 +29,10 @@ data class AppRisk(
     val findings: List<Finding>,
     val trackers: List<String>,
     val isSystem: Boolean,
+    /** Názov malvéru z MalwareBazaar, ak sa odtlačok appky našiel v databáze. */
+    val malware: String? = null,
+    /** Appka má kombináciu schopností typickú pre bankové trójske kone. */
+    val banker: Boolean = false,
 ) {
     val grade: Char get() = PrivacyAuditor.grade(score)
 }
@@ -31,6 +42,10 @@ data class DeviceReport(
     /** 0–100, vyššie = lepšie chránený telefón. */
     val protectionScore: Int,
     val scannedAt: Long,
+    /** Počet appiek overených v MalwareBazaar (0 = kontrola neprebehla). */
+    val malwareChecked: Int = 0,
+    /** Chyba antivírusovej kontroly (napr. neplatný kľúč), inak null. */
+    val malwareError: String? = null,
 )
 
 object PrivacyAuditor {
@@ -60,6 +75,7 @@ object PrivacyAuditor {
     suspend fun scan(
         ctx: Context,
         includeSystem: Boolean,
+        checkMalware: Boolean = true,
         onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
     ): DeviceReport = withContext(Dispatchers.IO) {
         val pm = ctx.packageManager
@@ -70,23 +86,90 @@ object PrivacyAuditor {
             ctx.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ).orEmpty()
         val enabledListeners = NotificationManagerCompat.getEnabledListenerPackages(ctx)
+        val activeAdmins = runCatching {
+            ctx.getSystemService(DevicePolicyManager::class.java)?.activeAdmins
+                ?.map { it.packageName }?.toSet()
+        }.getOrNull().orEmpty()
 
         val candidates = packages.filter { p ->
             val ai = p.applicationInfo
             ai != null && p.packageName != ctx.packageName && (includeSystem || !isSystem(ai))
         }
 
-        val results = candidates.mapIndexed { index, p ->
-            onProgress(index + 1, candidates.size)
-            auditPackage(ctx, pm, p, hasUsage, lastUsed, enabledA11y, enabledListeners)
-        }.sortedByDescending { it.score }
+        // Antivírusová kontrola len pre appky, ktoré si používateľ nainštaloval sám
+        val malwareTargets = if (checkMalware && MalwareChecker.hasKey(ctx)) {
+            candidates.filter { !isSystem(it.applicationInfo!!) }.map { it.packageName }.toSet()
+        } else emptySet()
+        val total = candidates.size + malwareTargets.size
+
+        val audited = candidates.mapIndexed { index, p ->
+            onProgress(index + 1, total)
+            auditPackage(ctx, pm, p, hasUsage, lastUsed, enabledA11y, enabledListeners, activeAdmins)
+        }
+
+        var checked = 0
+        var malwareError: String? = null
+        val byPackage = candidates.associateBy { it.packageName }
+        val results = audited.map { risk ->
+            if (risk.packageName !in malwareTargets || malwareError != null) return@map risk
+            onProgress(candidates.size + checked + 1, total)
+            val ai = byPackage.getValue(risk.packageName).applicationInfo!!
+            val apks = listOfNotNull(ai.sourceDir) + ai.splitSourceDirs.orEmpty()
+            when (val r = MalwareChecker.check(
+                ctx, risk.packageName, byPackage.getValue(risk.packageName).lastUpdateTime, apks
+            )) {
+                is MalwareChecker.Result.Clean -> { checked++; risk }
+                is MalwareChecker.Result.Malware -> {
+                    checked++
+                    val text = "🦠 MALVÉR: ${r.signature} (databáza MalwareBazaar)" +
+                        if (r.tags.isNotEmpty()) " – " + r.tags.take(3).joinToString(", ") else ""
+                    risk.copy(
+                        score = 100,
+                        malware = r.signature,
+                        findings = listOf(Finding(text, 100)) + risk.findings,
+                    )
+                }
+                is MalwareChecker.Result.Error -> { malwareError = r.message; risk }
+            }
+        }.sortedWith(compareByDescending<AppRisk> { it.malware != null }.thenByDescending { it.score })
+
+        notifyThreats(ctx, results)
 
         val protection = if (results.isEmpty()) 100 else {
             val avg = results.map { it.score }.average()
             val worst = results.first().score
             (100 - (avg * 0.6 + worst * 0.4)).roundToInt().coerceIn(0, 100)
         }
-        DeviceReport(results, protection, System.currentTimeMillis())
+        DeviceReport(results, protection, System.currentTimeMillis(), checked, malwareError)
+    }
+
+    /** Upozorní na nové nálezy malvéru a bankových trójskych koní (každý len raz). */
+    private fun notifyThreats(ctx: Context, results: List<AppRisk>) {
+        val already = Prefs.notifiedThreats(ctx)
+        val current = mutableSetOf<String>()
+        results.forEach { app ->
+            val id = when {
+                app.malware != null -> "M:${app.packageName}"
+                app.banker -> "B:${app.packageName}"
+                else -> return@forEach
+            }
+            current += id
+            if (id in already) return@forEach
+            val title = if (app.malware != null) "🦠 Nájdený malvér: ${app.label}"
+            else "⚠️ Podozrivá appka: ${app.label}"
+            val detail = if (app.malware != null) "${app.malware} – odporúčame appku hneď odinštalovať."
+            else "Má schopnosti typické pre bankové trójske kone. Ak ju nepoznáš, odinštaluj ju."
+            ShieldLog.add(
+                ShieldEvent(
+                    System.currentTimeMillis(), EventType.MALWARE,
+                    if (app.malware != null || app.findings.any { it.points >= 60 }) Severity.DANGER else Severity.WARNING,
+                    title, detail,
+                )
+            )
+            Notifications.alert(ctx, title, detail, tab = "apps")
+        }
+        // Zabudni na odinštalované appky, aby sa pri opätovnej inštalácii znova upozornilo
+        Prefs.setNotifiedThreats(ctx, current)
     }
 
     private fun auditPackage(
@@ -97,6 +180,7 @@ object PrivacyAuditor {
         lastUsed: Map<String, Long>,
         enabledA11y: String,
         enabledListeners: Set<String>,
+        activeAdmins: Set<String>,
     ): AppRisk {
         val ai = p.applicationInfo!!
         val label = runCatching { pm.getApplicationLabel(ai).toString() }.getOrDefault(p.packageName)
@@ -152,9 +236,11 @@ object PrivacyAuditor {
         }
 
         // 3) Pôvod inštalácie
+        var sideloaded = false
         if (!isSystem(ai)) {
             val installer = installerOf(pm, p.packageName)
             if (installer !in trustedInstallers) {
+                sideloaded = true
                 findings += Finding(
                     "Nainštalovaná mimo obchodu" + (installer?.let { " ($it)" } ?: ""), 10
                 )
@@ -176,6 +262,27 @@ object PrivacyAuditor {
             findings += Finding("Sledovacie SDK: ${trackers.size}", (trackers.size * 5).coerceAtMost(25))
         }
 
+        // 6) Bankový trójsky kôň
+        var banker = false
+        if (!isSystem(ai)) {
+            val a11yServices = detail?.services.orEmpty()
+                .filter { it.permission == "android.permission.BIND_ACCESSIBILITY_SERVICE" }
+            val signals = BankerDetector.Signals(
+                accessibility = a11yServices.isNotEmpty(),
+                accessibilityEnabled = enabledA11y.contains(p.packageName + "/"),
+                overlay = "android.permission.SYSTEM_ALERT_WINDOW" in requested,
+                sms = "android.permission.READ_SMS" in requested || "android.permission.RECEIVE_SMS" in requested,
+                deviceAdmin = p.packageName in activeAdmins ||
+                    detail?.receivers.orEmpty().any { it.permission == "android.permission.BIND_DEVICE_ADMIN" },
+                installsApps = "android.permission.REQUEST_INSTALL_PACKAGES" in requested,
+                sideloaded = sideloaded,
+            )
+            BankerDetector.evaluate(signals)?.let { v ->
+                banker = true
+                findings += Finding(v.text, v.points)
+            }
+        }
+
         val unique = findings.distinctBy { it.text }.sortedByDescending { it.points }
         return AppRisk(
             packageName = p.packageName,
@@ -184,6 +291,7 @@ object PrivacyAuditor {
             findings = unique,
             trackers = trackers,
             isSystem = isSystem(ai),
+            banker = banker,
         )
     }
 

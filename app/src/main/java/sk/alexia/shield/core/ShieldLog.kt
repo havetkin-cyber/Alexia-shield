@@ -10,7 +10,7 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.Executors
 
-enum class EventType { LINK, CAMERA, MICROPHONE, FIREWALL }
+enum class EventType { LINK, CAMERA, MICROPHONE, FIREWALL, MALWARE }
 enum class Severity { INFO, WARNING, DANGER }
 
 data class ShieldEvent(

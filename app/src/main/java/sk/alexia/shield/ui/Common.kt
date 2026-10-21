@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Link
@@ -103,6 +104,7 @@ fun EventRow(event: ShieldEvent) {
                 EventType.CAMERA -> Icons.Filled.Videocam
                 EventType.MICROPHONE -> Icons.Filled.Mic
                 EventType.FIREWALL -> Icons.Filled.Dns
+                EventType.MALWARE -> Icons.Filled.BugReport
             },
             contentDescription = null,
             tint = severityColor(event.severity),

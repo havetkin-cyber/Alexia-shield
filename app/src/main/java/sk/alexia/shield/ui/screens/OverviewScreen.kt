@@ -112,6 +112,15 @@ fun OverviewScreen(vm: MainViewModel, onNavigate: (Tab) -> Unit) {
                             }
                         }
                     }
+                    val threats = r.apps.filter { it.malware != null || it.banker }
+                    if (threats.isNotEmpty()) {
+                        Text(
+                            "🦠 Hrozby: " + threats.joinToString { it.label },
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
                     val worst = r.apps.take(3).filter { it.score > 25 }
                     if (worst.isNotEmpty()) {
                         HintText("Najrizikovejšie: " + worst.joinToString { it.label })
